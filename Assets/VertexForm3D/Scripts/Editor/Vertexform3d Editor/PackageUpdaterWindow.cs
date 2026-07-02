@@ -6,8 +6,10 @@ using Unity.EditorCoroutines.Editor;
 using System.IO;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
+using Newtonsoft.Json.Linq;
 
 [System.Serializable]
 public class PackageUpdateInfo
@@ -31,8 +33,270 @@ public static class PackageImportResumer
     private const string PrefKey_TotalPackages = "VertexForm3D_TotalPackages";
     private const string PrefKey_IsImporting = "VertexForm3D_IsImporting";
     private const string PrefKey_LastResumeAttempt = "VertexForm3D_LastResumeAttempt";
+    private const string PrefKey_ExcludeDefaultScenes = "VertexForm3D_ExcludeDefaultScenes";
+    private const string PrefKey_UsedFallbackPackageImport = "VertexForm3D_UsedFallbackPackageImport";
+    private const string PrefKey_SceneBackupManifest = "VertexForm3D_SceneBackupManifest";
+    private const string SceneBackupRootFolderName = "VertexForm3D_ScenePreserve";
+
+    // Database Scenes are skipped from the package when the toggle is enabled.
+    // If they already exist locally, the local copy is kept. If not, they are not imported.
+    // HomeScene, LoginScene, and addressableScene always update from the package.
+    private static readonly string[] ProtectedSceneFolders = new[]
+    {
+        "Assets/VertexForm3D/Scenes/Vertex Form 3D Scenes/Database Scenes",
+    };
+
+    private static readonly string[] ProtectedSceneFiles = Array.Empty<string>();
+
+    private static string SceneBackupRoot =>
+        Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", SceneBackupRootFolderName));
+
+    private static string ProjectRoot =>
+        Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+
+    /// <summary>
+    /// Imports a package, skipping Database Scenes from the package when requested.
+    /// Tries Unity's internal selective import first, then manual tar.gz extraction.
+    /// Full ImportPackage is only used as a last resort and cleaned up after completion.
+    /// </summary>
+    public static void ImportPackageWithOptionalScenePreservation(string packagePath)
+    {
+        if (!EditorPrefs.GetBool(PrefKey_ExcludeDefaultScenes, false))
+        {
+            AssetDatabase.ImportPackage(packagePath, false);
+            return;
+        }
+
+        if (SelectivePackageImporter.TryImportPackage(
+                packagePath,
+                ProtectedSceneFolders,
+                ProtectedSceneFiles,
+                out int excludedCount,
+                out int importedCount,
+                out string selectiveImportError))
+        {
+            Debug.Log($"[PackageImportResumer] Selective import complete. Imported: {importedCount}, skipped Database Scenes: {excludedCount}. Local Database Scenes were not modified.");
+            return;
+        }
+
+        Debug.LogWarning($"[PackageImportResumer] Selective import unavailable ({selectiveImportError}). Trying manual package extraction.");
+
+        if (ManualUnityPackageImporter.TryImportPackage(
+                packagePath,
+                ProtectedSceneFolders,
+                ProtectedSceneFiles,
+                out excludedCount,
+                out importedCount,
+                out string manualImportError))
+        {
+            Debug.Log($"[PackageImportResumer] Manual import complete. Imported: {importedCount}, skipped Database Scenes: {excludedCount}. Local Database Scenes were not modified.");
+            return;
+        }
+
+        Debug.LogWarning($"[PackageImportResumer] Manual import failed ({manualImportError}). Using full ImportPackage with post-import cleanup.");
+        EditorPrefs.SetBool(PrefKey_UsedFallbackPackageImport, true);
+        BackupProtectedScenesIfRequested();
+        EnsureImportCompletedCallbackRegistered();
+        AssetDatabase.ImportPackage(packagePath, false);
+    }
+
+    private static void EnsureImportCompletedCallbackRegistered()
+    {
+        if (hasRegisteredImportCompletedCallback)
+            return;
+
+        AssetDatabase.importPackageCompleted += OnImportPackageCompleted;
+        hasRegisteredImportCompletedCallback = true;
+    }
+
+    private static void OnImportPackageCompleted(string packageName)
+    {
+        if (!EditorPrefs.GetBool(PrefKey_ExcludeDefaultScenes, false))
+            return;
+
+        if (!EditorPrefs.GetBool(PrefKey_UsedFallbackPackageImport, false))
+            return;
+
+        Debug.Log($"[PackageImportResumer] Fallback import completed for '{packageName}'. Finalizing Database Scenes exclusion...");
+        FinalizeDatabaseScenesExclusionAfterImport();
+        CompleteImportAndRefreshUpdater();
+    }
+
+    /// <summary>
+    /// Copies existing scene assets to a temp backup before import so they can be restored
+    /// after the package overwrites them. Only used when selective import is unavailable.
+    /// </summary>
+    public static void BackupProtectedScenesIfRequested()
+    {
+        if (!EditorPrefs.GetBool(PrefKey_ExcludeDefaultScenes, false))
+            return;
+
+        ClearSceneBackupDirectory();
+
+        List<string> backedUpPaths = new List<string>();
+
+        foreach (string folder in ProtectedSceneFolders)
+        {
+            if (!ProtectedAssetExists(folder))
+                continue;
+
+            string sourcePath = Path.Combine(ProjectRoot, folder);
+            string destPath = Path.Combine(SceneBackupRoot, folder);
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+            FileUtil.CopyFileOrDirectory(sourcePath, destPath);
+            backedUpPaths.Add(folder);
+            Debug.Log($"[PackageImportResumer] Backed up scene folder before import: {folder}");
+        }
+
+        foreach (string file in ProtectedSceneFiles)
+        {
+            string sourcePath = Path.Combine(ProjectRoot, file);
+            if (!File.Exists(sourcePath))
+                continue;
+
+            string destPath = Path.Combine(SceneBackupRoot, file);
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+            FileUtil.CopyFileOrDirectory(sourcePath, destPath);
+            backedUpPaths.Add(file);
+            Debug.Log($"[PackageImportResumer] Backed up scene file before import: {file}");
+        }
+
+        if (backedUpPaths.Count > 0)
+        {
+            EditorPrefs.SetString(PrefKey_SceneBackupManifest, string.Join("|||", backedUpPaths));
+            Debug.Log($"[PackageImportResumer] Scene backup complete ({backedUpPaths.Count} path(s)).");
+        }
+        else
+        {
+            EditorPrefs.DeleteKey(PrefKey_SceneBackupManifest);
+            Debug.Log("[PackageImportResumer] No local Database Scenes to back up; package Database Scenes will be stripped after fallback import.");
+        }
+    }
+
+    /// <summary>
+    /// After a fallback full ImportPackage only: restores backed-up local Database Scenes,
+    /// or removes package-imported Database Scenes when the project did not already have them.
+    /// Selective/manual import never calls this for deletion — local scenes are left untouched.
+    /// </summary>
+    public static void FinalizeDatabaseScenesExclusionAfterImport()
+    {
+        if (!EditorPrefs.GetBool(PrefKey_ExcludeDefaultScenes, false))
+            return;
+
+        bool usedFallbackImport = EditorPrefs.GetBool(PrefKey_UsedFallbackPackageImport, false);
+        if (!usedFallbackImport)
+            return;
+
+        string manifest = EditorPrefs.GetString(PrefKey_SceneBackupManifest, "");
+        HashSet<string> backedUpPaths = string.IsNullOrEmpty(manifest)
+            ? new HashSet<string>()
+            : new HashSet<string>(manifest.Split(new[] { "|||" }, StringSplitOptions.None));
+
+        bool changed = false;
+
+        foreach (string assetPath in backedUpPaths)
+        {
+            string backupPath = Path.Combine(SceneBackupRoot, assetPath);
+            if (!Directory.Exists(backupPath) && !File.Exists(backupPath))
+                continue;
+
+            DeleteProtectedAsset(assetPath);
+
+            string destPath = Path.Combine(ProjectRoot, assetPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+            FileUtil.CopyFileOrDirectory(backupPath, destPath);
+            Debug.Log($"[PackageImportResumer] Restored your local Database Scenes from backup: {assetPath}");
+            changed = true;
+        }
+
+        foreach (string folder in ProtectedSceneFolders)
+        {
+            if (backedUpPaths.Contains(folder) || !ProtectedAssetExists(folder))
+                continue;
+
+            if (DeleteProtectedAsset(folder))
+            {
+                Debug.Log($"[PackageImportResumer] Removed Database Scenes imported from package: {folder}");
+                changed = true;
+            }
+        }
+
+        foreach (string file in ProtectedSceneFiles)
+        {
+            if (backedUpPaths.Contains(file) || AssetDatabase.LoadMainAssetAtPath(file) == null)
+                continue;
+
+            if (DeleteProtectedAsset(file))
+            {
+                Debug.Log($"[PackageImportResumer] Removed scene file imported from package: {file}");
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
+        ClearSceneBackupDirectory();
+        EditorPrefs.DeleteKey(PrefKey_SceneBackupManifest);
+        EditorPrefs.DeleteKey(PrefKey_UsedFallbackPackageImport);
+    }
+
+    private static bool ProtectedAssetExists(string assetPath)
+    {
+        string absolutePath = Path.Combine(ProjectRoot, assetPath);
+        return Directory.Exists(absolutePath)
+            || File.Exists(absolutePath)
+            || AssetDatabase.IsValidFolder(assetPath)
+            || AssetDatabase.LoadMainAssetAtPath(assetPath) != null;
+    }
+
+    private static bool DeleteProtectedAsset(string assetPath)
+    {
+        if (AssetDatabase.IsValidFolder(assetPath) || AssetDatabase.LoadMainAssetAtPath(assetPath) != null)
+            return AssetDatabase.DeleteAsset(assetPath);
+
+        string absolutePath = Path.Combine(ProjectRoot, assetPath);
+        if (Directory.Exists(absolutePath))
+        {
+            Directory.Delete(absolutePath, true);
+            string metaPath = absolutePath + ".meta";
+            if (File.Exists(metaPath))
+                File.Delete(metaPath);
+            return true;
+        }
+
+        if (File.Exists(absolutePath))
+        {
+            File.Delete(absolutePath);
+            string metaPath = absolutePath + ".meta";
+            if (File.Exists(metaPath))
+                File.Delete(metaPath);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void ClearSceneBackupDirectory()
+    {
+        if (!Directory.Exists(SceneBackupRoot))
+            return;
+
+        try
+        {
+            Directory.Delete(SceneBackupRoot, true);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[PackageImportResumer] Failed to clear scene backup directory: {ex.Message}");
+        }
+    }
 
     private static bool hasRegisteredUpdateCallback = false;
+    private static bool hasRegisteredImportCompletedCallback = false;
     private static double lastPollTime = 0;
 
     static PackageImportResumer()
@@ -81,6 +345,10 @@ public static class PackageImportResumer
         bool isImporting = EditorPrefs.GetBool(PrefKey_IsImporting, false);
 
         Debug.Log($"[PackageImportResumer] Static constructor called - HasPackages: {hasPackages}, IsImporting: {isImporting}");
+
+        // After a fallback full import, restore backed-up Database Scenes or strip package defaults.
+        if (EditorPrefs.GetBool(PrefKey_UsedFallbackPackageImport, false))
+            FinalizeDatabaseScenesExclusionAfterImport();
 
         if (hasPackages && isImporting)
         {
@@ -219,10 +487,10 @@ public static class PackageImportResumer
             Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] Updated index to {currentIndex + 1} for next import after domain reload.");
         }
 
-        // Import the package (this will trigger domain reload)
-        Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] Calling AssetDatabase.ImportPackage({packagePath}, false)...");
-        AssetDatabase.ImportPackage(packagePath, false);
-        Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] AssetDatabase.ImportPackage returned");
+        // Import the package (selectively skips scene examples when the toggle is enabled).
+        Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] Importing package...");
+        ImportPackageWithOptionalScenePreservation(packagePath);
+        Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] Package import returned");
 
         // Delete temp file AFTER import (but before domain reload completes)
         // Note: We delete the file we just imported, not the next one
@@ -249,18 +517,29 @@ public static class PackageImportResumer
         else
         {
             Debug.Log($"[PackageImportResumer] [IMPORT {currentIndex + 1}/{totalPackages}] All packages imported!");
-            ClearImportProgress();
-
-            // Refresh update info
-            EditorApplication.delayCall += () =>
+            if (EditorPrefs.GetBool(PrefKey_UsedFallbackPackageImport, false))
             {
-                var window = EditorWindow.GetWindow<PackageUpdaterWindow>("Package Updater", false);
-                if (window != null)
-                {
-                    Unity.EditorCoroutines.Editor.EditorCoroutineUtility.StartCoroutineOwnerless(window.FetchUpdateInfo());
-                }
-            };
+                Debug.Log("[PackageImportResumer] Waiting for fallback ImportPackage to finish before cleanup.");
+            }
+            else
+            {
+                CompleteImportAndRefreshUpdater();
+            }
         }
+    }
+
+    private static void CompleteImportAndRefreshUpdater()
+    {
+        ClearImportProgress();
+
+        EditorApplication.delayCall += () =>
+        {
+            var window = EditorWindow.GetWindow<PackageUpdaterWindow>("Package Updater", false);
+            if (window != null)
+            {
+                Unity.EditorCoroutines.Editor.EditorCoroutineUtility.StartCoroutineOwnerless(window.FetchUpdateInfo());
+            }
+        };
     }
 
     private static void UpdatePackageVersionStatic(string newVersion)
@@ -290,6 +569,7 @@ public static class PackageImportResumer
         EditorPrefs.DeleteKey(PrefKey_CurrentImportIndex);
         EditorPrefs.DeleteKey(PrefKey_TotalPackages);
         EditorPrefs.DeleteKey(PrefKey_IsImporting);
+        EditorPrefs.DeleteKey(PrefKey_UsedFallbackPackageImport);
     }
 
     public static void SaveDownloadedPackages(List<string> paths, List<string> versions)
@@ -311,9 +591,13 @@ public static class PackageImportResumer
 
 public class PackageUpdaterWindow : EditorWindow
 {
-    private const string defaultPackageUrl = "https://storage.googleapis.com/vertexform_package_updater/version.json";
+    private const string defaultPackageUrl = "https://storage.googleapis.com/vertexform_package_updater/WebGPU/version.json";
     private const string tempFileName = "downloaded_package.unitypackage";
-    private const string jsonUrl = "https://storage.googleapis.com/vertexform_package_updater/version.json";
+    private const string jsonUrl = "https://storage.googleapis.com/vertexform_package_updater/WebGPU/version.json";
+    private const string openUpmRegistryName = "OpenUPM";
+    private const string openUpmRegistryUrl = "https://package.openupm.com";
+    private const string webxrPackageId = "com.de-panther.webxr";
+    private const string webxrScopePrefix = "com.de-panther";
 
     // EditorPrefs keys for resuming after domain reload
     private const string PrefKey_HasPackagesToImport = "VertexForm3D_HasPackagesToImport";
@@ -321,6 +605,8 @@ public class PackageUpdaterWindow : EditorWindow
     private const string PrefKey_PackageVersions = "VertexForm3D_PackageVersions"; // Delimited string
     private const string PrefKey_CurrentImportIndex = "VertexForm3D_CurrentImportIndex";
     private const string PrefKey_TotalPackages = "VertexForm3D_TotalPackages";
+    private const string PrefKey_IsImporting = "VertexForm3D_IsImporting";
+    private const string PrefKey_ExcludeDefaultScenes = "VertexForm3D_ExcludeDefaultScenes";
 
     private string statusMessage = "Idle";
     private float downloadProgress = 0f;
@@ -334,6 +620,8 @@ public class PackageUpdaterWindow : EditorWindow
     private int currentUpdateIndex = 0; // Current version being downloaded
     private bool isFetchingUpdateInfo = false; // Track if we're currently fetching update info
     private bool autoStartDownload = false; // Flag to auto-start download after fetch completes
+    private bool isInstallingWebXR = false;
+    private bool isWebXRInstalled = false;
 
     private ListRequest listRequest;
 
@@ -390,6 +678,9 @@ public class PackageUpdaterWindow : EditorWindow
     private void OnEnable()
     {
         Debug.Log($"[PackageUpdater] OnEnable called. HasPackagesToImport: {EditorPrefs.GetBool(PrefKey_HasPackagesToImport, false)}");
+        isImporting = EditorPrefs.GetBool(PrefKey_HasPackagesToImport, false)
+            && EditorPrefs.GetBool(PrefKey_IsImporting, false);
+        RefreshWebXRInstalledState();
         EditorCoroutineUtility.StartCoroutineOwnerless(FetchUpdateInfo());
     }
 
@@ -442,6 +733,21 @@ public class PackageUpdaterWindow : EditorWindow
 
         GUILayout.Space(10);
 
+        // Toggle: when enabled, Database Scenes from the package are not imported.
+        bool excludeDefaultScenes = EditorPrefs.GetBool(PrefKey_ExcludeDefaultScenes, false);
+        string preserveScenesTooltip =
+            "When enabled, 'Database Scenes' from the package are not imported. All other package changes still apply. " +
+            "If you already have local Database Scenes, those are kept.";
+        bool newExcludeDefaultScenes = EditorGUILayout.ToggleLeft(
+            new GUIContent("Don't import Database Scenes from package", preserveScenesTooltip),
+            excludeDefaultScenes);
+        if (newExcludeDefaultScenes != excludeDefaultScenes)
+        {
+            EditorPrefs.SetBool(PrefKey_ExcludeDefaultScenes, newExcludeDefaultScenes);
+        }
+
+        GUILayout.Space(10);
+
         GUI.enabled = !isDownloading && !isImporting && isUpdateAvailable;
         if (GUILayout.Button("Update Package (.unitypackage)", GUILayout.Height(40)))
         {
@@ -459,6 +765,19 @@ public class PackageUpdaterWindow : EditorWindow
         GUI.enabled = true;
 
         GUILayout.Space(20);
+
+        bool canInstallWebXR = !isDownloading && !isImporting && !isUpdatingPackages && !isInstallingWebXR && !isWebXRInstalled;
+        GUI.enabled = canInstallWebXR;
+        string webxrButtonLabel = isWebXRInstalled
+            ? "WebXR Package Already Installed"
+            : "Install WebXR Package (Scoped Registry)";
+        if (GUILayout.Button(webxrButtonLabel, GUILayout.Height(30)))
+        {
+            EditorCoroutineUtility.StartCoroutineOwnerless(InstallWebXRPackage());
+        }
+        GUI.enabled = true;
+
+        GUILayout.Space(10);
 
         if (isDownloading || isImporting)
         {
@@ -839,12 +1158,12 @@ public class PackageUpdaterWindow : EditorWindow
             EditorPrefs.SetInt(PrefKey_CurrentImportIndex, i);
             EditorPrefs.SetBool(PrefKey_HasPackagesToImport, true);
 
-            Debug.Log($"[PackageUpdater] [IMPORT {i + 1}/{totalPackages}] Calling AssetDatabase.ImportPackage({packagePath}, false)...");
+            Debug.Log($"[PackageUpdater] [IMPORT {i + 1}/{totalPackages}] Importing package...");
 
             // Import the package (this may trigger domain reload)
-            AssetDatabase.ImportPackage(packagePath, false);
+            PackageImportResumer.ImportPackageWithOptionalScenePreservation(packagePath);
 
-            Debug.Log($"[PackageUpdater] [IMPORT {i + 1}/{totalPackages}] AssetDatabase.ImportPackage returned. Refreshing asset database...");
+            Debug.Log($"[PackageUpdater] [IMPORT {i + 1}/{totalPackages}] Package import returned. Refreshing asset database...");
 
             // Wait for import to complete and asset database to refresh
             AssetDatabase.Refresh();
@@ -1151,5 +1470,145 @@ public class PackageUpdaterWindow : EditorWindow
 
         isUpdatingPackages = false;
         Repaint();
+    }
+
+    private IEnumerator InstallWebXRPackage()
+    {
+        isInstallingWebXR = true;
+        statusMessage = "Checking scoped registry for WebXR...";
+        Repaint();
+
+        if (!EnsureWebXRScopedRegistry())
+        {
+            statusMessage = "Failed to configure OpenUPM scoped registry.";
+            isInstallingWebXR = false;
+            Repaint();
+            yield break;
+        }
+
+        statusMessage = $"Installing {webxrPackageId}...";
+        Repaint();
+
+        var addRequest = Client.Add(webxrPackageId);
+        while (!addRequest.IsCompleted)
+        {
+            yield return null;
+        }
+
+        if (addRequest.Status == StatusCode.Success)
+        {
+            statusMessage = "WebXR package installed successfully.";
+            isWebXRInstalled = true;
+            Debug.Log($"[PackageUpdater] Installed {webxrPackageId} successfully.");
+        }
+        else
+        {
+            string errorMessage = addRequest.Error != null ? addRequest.Error.message : "Unknown error";
+            statusMessage = $"Failed to install {webxrPackageId}.";
+            Debug.LogError($"[PackageUpdater] Failed to install {webxrPackageId}: {errorMessage}");
+        }
+
+        isInstallingWebXR = false;
+        Repaint();
+    }
+
+    private bool EnsureWebXRScopedRegistry()
+    {
+        try
+        {
+            string manifestPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Packages", "manifest.json");
+            if (!File.Exists(manifestPath))
+            {
+                Debug.LogError($"[PackageUpdater] manifest.json not found at: {manifestPath}");
+                return false;
+            }
+
+            string manifestText = File.ReadAllText(manifestPath);
+            JObject manifestJson = JObject.Parse(manifestText);
+
+            JArray scopedRegistries = manifestJson["scopedRegistries"] as JArray;
+            if (scopedRegistries == null)
+            {
+                scopedRegistries = new JArray();
+                manifestJson["scopedRegistries"] = scopedRegistries;
+            }
+
+            JObject openUpmRegistry = null;
+            foreach (JToken registryToken in scopedRegistries)
+            {
+                if (!(registryToken is JObject registryObject))
+                    continue;
+
+                string url = registryObject.Value<string>("url");
+                string name = registryObject.Value<string>("name");
+                if (string.Equals(url, openUpmRegistryUrl, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(name, openUpmRegistryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    openUpmRegistry = registryObject;
+                    break;
+                }
+            }
+
+            bool manifestChanged = false;
+
+            if (openUpmRegistry == null)
+            {
+                openUpmRegistry = new JObject
+                {
+                    ["name"] = openUpmRegistryName,
+                    ["url"] = openUpmRegistryUrl,
+                    ["scopes"] = new JArray(webxrScopePrefix)
+                };
+                scopedRegistries.Add(openUpmRegistry);
+                manifestChanged = true;
+            }
+            else
+            {
+                JArray scopes = openUpmRegistry["scopes"] as JArray;
+                if (scopes == null)
+                {
+                    scopes = new JArray();
+                    openUpmRegistry["scopes"] = scopes;
+                    manifestChanged = true;
+                }
+
+                bool hasScope = false;
+                foreach (JToken scopeToken in scopes)
+                {
+                    string scopeValue = scopeToken.ToString();
+                    if (string.Equals(scopeValue, webxrScopePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasScope = true;
+                        break;
+                    }
+                }
+
+                if (!hasScope)
+                {
+                    scopes.Add(webxrScopePrefix);
+                    manifestChanged = true;
+                }
+            }
+
+            if (manifestChanged)
+            {
+                File.WriteAllText(manifestPath, manifestJson.ToString());
+                Debug.Log("[PackageUpdater] Updated manifest.json with OpenUPM scoped registry for WebXR.");
+                AssetDatabase.Refresh();
+            }
+
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[PackageUpdater] Failed to update scoped registry: {e.Message}");
+            return false;
+        }
+    }
+
+    private void RefreshWebXRInstalledState()
+    {
+        UnityEditor.PackageManager.PackageInfo[] packages = UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages();
+        isWebXRInstalled = packages != null && packages.Any(pkg => pkg.name == webxrPackageId);
     }
 }

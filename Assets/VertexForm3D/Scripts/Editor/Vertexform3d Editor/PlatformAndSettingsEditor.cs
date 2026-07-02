@@ -27,7 +27,21 @@ public class PlatformAndSettingsEditor : Editor
         using (new EditorGUI.DisabledScope(true))
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_Script"));
 
-        EditorGUILayout.PropertyField(serializedObject.FindProperty("platformChoice"));
+        SerializedProperty platformChoiceProp = serializedObject.FindProperty("platformChoice");
+        SerializedProperty webGpuBrowserKindProp = serializedObject.FindProperty("webGpuBrowserKind");
+
+        EditorGUI.BeginChangeCheck();
+        EditorGUILayout.PropertyField(platformChoiceProp);
+        if (platformChoiceProp.enumValueIndex == (int)platform.WebGPU)
+        {
+            EditorGUILayout.PropertyField(
+                webGpuBrowserKindProp,
+                new GUIContent(
+                    "WebGPU Browser Kind (for testing)",
+                    "When platform is WebGPU, set from WebGL index.html (SendMessage). In Editor, use this for testing."));
+            EditorGUILayout.HelpBox("WebGPU browser kind is normally set at runtime from WebGL index.html (SendMessage). Use the field above to test a kind in the Editor.", MessageType.None);
+        }
+        bool platformSettingsChanged = EditorGUI.EndChangeCheck();
 
         EditorGUILayout.Space(8);
 
@@ -98,6 +112,15 @@ public class PlatformAndSettingsEditor : Editor
         }
 
         serializedObject.ApplyModifiedProperties();
+
+        if (platformSettingsChanged)
+        {
+            var editedPlatforms = (Platforms)target;
+            bool shouldUseMobileControls =
+                editedPlatforms.platformChoice == platform.WebGPU &&
+                editedPlatforms.webGpuBrowserKind == WebGpuBrowserKind.MobileBrowser;
+            DesktopMobileControlSettings.SetUseMobileControls(shouldUseMobileControls);
+        }
     }
 
     /// <param name="innerContentWidth">Width inside the help box for one row (after horizontal padding).</param>

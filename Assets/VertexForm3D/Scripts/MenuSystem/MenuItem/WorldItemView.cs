@@ -20,6 +20,9 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
     public GameObject howerUI;
     public WorldData worlddata = new WorldData();
     public bool InitalizeInStart;
+    MenuManager _menuManager;
+
+    MenuManager BoundMenuManager => _menuManager != null ? _menuManager : MenuManager.Instance;
 
     private void Start()
     {
@@ -35,25 +38,42 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
         {
             UpdateView(worlddata);
         }
+        EnsureHoverVisibleForTouch();
     }
 
-    public void SetWorldData(WorldData wd)
+    /// <summary>
+    /// <see cref="howerUI"/> wraps the row action buttons; if it stays off until hover, touch never activates it.
+    /// Uses <see cref="DesktopMobileControlSettings.UseMobileMenuHoverUx"/> (mobile, not VR).
+    /// </summary>
+    private void EnsureHoverVisibleForTouch()
     {
+        if (howerUI == null) return;
+        howerUI.SetActive(DesktopMobileControlSettings.UseMobileMenuHoverUx);
+    }
+
+    public void SetWorldData(WorldData wd, MenuManager menuManager)
+    {
+        _menuManager = menuManager;
         worlddata = wd.Clone();
         UpdateView(worlddata);
     }
 
     public void ShowInfo()
     {
-        MenuManager.Instance.ShowWorldDetails(worlddata);
+        BoundMenuManager?.ShowWorldDetails(worlddata);
     }
 
     public void OnTapStar()
     {
-        MenuManager.Instance.OnTapStar(worlddata.worldName, starBtn.GetComponent<Image>());
+        BoundMenuManager?.OnTapStar(worlddata.worldName, starBtn.GetComponent<Image>());
     }
     void LoadWorld()
     {
+        if (!IsPlatformSupported(worlddata))
+        {
+            BoundMenuManager?.ShowUnsupportedPlatformPopup(worlddata);
+            return;
+        }
         SceneLoader.Instance.isCesiumScene = false;
         SceneLoader.Instance.isFlyModeEnabled = worlddata.flyMode;
         if (RoomManager.Instance != null)
@@ -61,6 +81,17 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
             RoomManager.Instance.SetAddressableSceneVisuals(true);
         }
         SceneLoader.Instance.LoadScnene(worlddata.worldKey);
+    }
+
+    bool IsPlatformSupported(WorldData t)
+    {
+        var pl = ProjectManager.instance.platforms;
+        if (pl.platformChoice == platform.WebGPU && !t.WebGPU) return false;
+        if (pl.platformChoice == platform.VR && !t.VR) return false;
+        if (pl.platformChoice == platform.Desktop && !t.Desktop) return false;
+        if (pl.webGpuBrowserKind == WebGpuBrowserKind.WebXRBrowser && !t.WebXR) return false;
+        if (pl.webGpuBrowserKind == WebGpuBrowserKind.MobileBrowser && !t.Mobile) return false;
+        return true;
     }
 
     public void SetPlayerCountText()
@@ -85,6 +116,7 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
         this.worlddata = t;
         worldNameText.text = t.worldName;
         worldImage.sprite = t.worldImage;
+        clikedBtn.image.color = IsPlatformSupported(t) ? Color.white : Color.red;
         //placeMaxRoomCountTxt.text = t.maxPlayerCount + "";
 
         if (worlddata.sceneProvider == SceneProvider.Local)
@@ -110,10 +142,10 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
             });
         }
 
-        if (MenuManager.Instance != null)
-        {
-            MenuManager.Instance.WorldIsStarredOrNot(worlddata.worldName, starBtn.GetComponent<Image>());
-        }
+        if (BoundMenuManager != null)
+            BoundMenuManager.WorldIsStarredOrNot(worlddata.worldName, starBtn.GetComponent<Image>());
+
+        EnsureHoverVisibleForTouch();
     }
 
     private void OnDownloadCliked()
@@ -156,6 +188,8 @@ public class WorldItemView : MonoBehaviour, IBundleDownloadCallBack, IPointerEnt
 
     public void OnPointerExit(PointerEventData eventData)
     {
+        if (DesktopMobileControlSettings.UseMobileMenuHoverUx)
+            return;
         howerUI.SetActive(false);
     }
 

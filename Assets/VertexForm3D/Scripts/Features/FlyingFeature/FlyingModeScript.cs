@@ -33,13 +33,14 @@ public class FlyingModeScript : MonoBehaviour
                 Destroy(this);
             }
         }
+        isFlying = false;
         characterController = GetComponent<CharacterController>();
         _inputData = GetComponent<InputData>();
     }
 
     void Update()
     {
-        if (ProjectManager.instance.platforms.platformChoice == platform.Desktop)
+        if (ProjectManager.instance.platforms.IsDesktopStylePlatform())
         {
             isFlying = Input.GetKey(KeyCode.F);
             if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
@@ -101,7 +102,7 @@ public class FlyingModeScript : MonoBehaviour
     {
         if (isFlying || testingInEditor)
         {
-            if (ProjectManager.instance.platforms.platformChoice == platform.Desktop)
+            if (ProjectManager.instance.platforms.IsDesktopStylePlatform())
             {
                 if (characterController.GetComponent<XRRigController>().isThirdPerson)
                 {

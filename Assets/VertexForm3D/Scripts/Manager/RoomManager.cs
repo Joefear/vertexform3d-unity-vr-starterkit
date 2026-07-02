@@ -47,6 +47,7 @@ namespace VertexFormCore
         [SerializeField] private CanvasGroup fadeCanvasGroup;
         [SerializeField] private FusionVoiceClient fusionVoiceClient;
         private bool _isReturningHomeFromDisconnect;
+        private bool _pendingVoiceJoin;
 
         GameObject connectVRObject;
         public Vector3 spawnPosition;
@@ -224,14 +225,17 @@ namespace VertexFormCore
             // Create scene info for both base scene and addressable scene
             var sceneInfo = new NetworkSceneInfo();
 
-            // Add ONLY the base "addressableScene" from build settings to Fusion's scene management
-            // Use FromPath instead of FromIndex for cross-platform compatibility
+            // Base "addressableScene" must be in Editor Build Settings. Use build index so Fusion loads it
+            // via SceneManager (not Addressables). FromPath would require that path in Fusion's addressable list.
             var baseScene = SceneManager.GetSceneByName("addressableScene");
             if (baseScene.IsValid())
             {
-                var baseSceneRef = SceneRef.FromPath(baseScene.path);
+                int baseBuildIndex = SceneUtility.GetBuildIndexByScenePath(baseScene.path);
+                SceneRef baseSceneRef = baseBuildIndex >= 0
+                    ? SceneRef.FromIndex(baseBuildIndex)
+                    : SceneRef.FromPath(baseScene.path);
                 sceneInfo.AddSceneRef(baseSceneRef, LoadSceneMode.Single);
-                Debug.Log($"Adding base scene to network: {baseScene.name} (path: {baseScene.path})");
+                Debug.Log($"Adding base scene to network: {baseScene.name} (path: {baseScene.path}, SceneRef: {(baseBuildIndex >= 0 ? $"index {baseBuildIndex}" : "path")})");
             }
 
             // Register and add the addressable scene for Fusion to load
@@ -442,6 +446,16 @@ namespace VertexFormCore
         /// </summary>
         public void JoinVoiceLobby()
         {
+            if (!IsFusionRunnerReadyForVoice())
+            {
+                if (!_pendingVoiceJoin)
+                {
+                    Debug.Log("[RoomManager] Voice join deferred: Fusion runner not ready yet. Queuing one-shot pending join.");
+                }
+                _pendingVoiceJoin = true;
+                return;
+            }
+
             if (fusionVoiceClient == null)
             {
                 fusionVoiceClient = FindFirstObjectByType<FusionVoiceClient>();
@@ -463,8 +477,19 @@ namespace VertexFormCore
             if (fusionVoiceClient.Client != null && fusionVoiceClient.Client.State == Photon.Realtime.ClientState.Joined)
             {
                 Debug.Log("[RoomManager] Voice client already joined to voice room");
+                _pendingVoiceJoin = false;
                 EnableVoiceRecorder();
                 return;
+            }
+
+            if (fusionVoiceClient.Client != null)
+            {
+                var state = fusionVoiceClient.Client.State;
+                if (IsVoiceClientTransitionState(state))
+                {
+                    Debug.Log($"[RoomManager] Voice client is transitioning ({state}), delaying manual join request.");
+                    return;
+                }
             }
 
             // Manually connect and join the voice room
@@ -474,6 +499,7 @@ namespace VertexFormCore
             if (success)
             {
                 Debug.Log("[RoomManager] Voice lobby join command sent successfully");
+                _pendingVoiceJoin = false;
                 // Enable recorder after a short delay to ensure connection is established
                 StartCoroutine(EnableVoiceRecorderDelayed(2f));
             }
@@ -481,6 +507,40 @@ namespace VertexFormCore
             {
                 Debug.LogError("[RoomManager] Failed to send voice lobby join command");
             }
+        }
+
+        private bool IsFusionRunnerReadyForVoice()
+        {
+            if (_runner == null)
+                return false;
+
+            if (!_runner.IsRunning)
+                return false;
+
+            // SessionInfo is populated once the runner is in an active session.
+            if (_runner.SessionInfo == null)
+                return false;
+
+            return true;
+        }
+
+        private void TryConsumePendingVoiceJoin(string source)
+        {
+            if (!_pendingVoiceJoin)
+                return;
+
+            if (!IsFusionRunnerReadyForVoice())
+                return;
+
+            Debug.Log($"[RoomManager] Consuming pending voice join from {source}.");
+            JoinVoiceLobby();
+        }
+
+        private static bool IsVoiceClientTransitionState(Photon.Realtime.ClientState state)
+        {
+            return state != Photon.Realtime.ClientState.Disconnected &&
+                   state != Photon.Realtime.ClientState.PeerCreated &&
+                   state != Photon.Realtime.ClientState.Joined;
         }
 
         /// <summary>
@@ -493,29 +553,30 @@ namespace VertexFormCore
         }
 
         /// <summary>
-        /// Enable the voice recorder to ensure voice transmission works
+        /// Wire Photon recorders after voice join: recording on, <see cref="Recorder.TransmitEnabled"/> follows
+        /// the local player's runtime mute toggle when available (same as <see cref="PlayerUIManager"/> / in-session UI),
+        /// otherwise <see cref="SettingClass.micType"/> defaults.
         /// </summary>
         private void EnableVoiceRecorder()
         {
-            Debug.Log("[RoomManager] Enabling voice recorder...");
+            bool transmit = VoiceTransmitDesiredForLocalPlayer();
+            Debug.Log($"[RoomManager] Apply voice recorders after join — transmit={(transmit ? "on" : "off (muted)")}");
 
-            // Enable primary recorder if it exists
-            if (fusionVoiceClient != null && fusionVoiceClient.PrimaryRecorder != null)
+            void Apply(Photon.Voice.Unity.Recorder recorder, string label)
             {
-                fusionVoiceClient.PrimaryRecorder.TransmitEnabled = true;
-                fusionVoiceClient.PrimaryRecorder.RecordingEnabled = true;
-                Debug.Log($"[RoomManager] Primary Recorder enabled - TransmitEnabled: {fusionVoiceClient.PrimaryRecorder.TransmitEnabled}, IsTransmitting: {fusionVoiceClient.PrimaryRecorder.IsCurrentlyTransmitting}");
+                if (recorder == null)
+                    return;
+                recorder.RecordingEnabled = true;
+                recorder.TransmitEnabled = transmit;
+                Debug.Log($"[RoomManager] {label} — RecordingEnabled={recorder.RecordingEnabled}, TransmitEnabled={recorder.TransmitEnabled}");
             }
 
-            // Also ensure VoiceRecorderManager's recorder is enabled
-            if (VoiceRecorderManager.Instance != null && VoiceRecorderManager.Instance.recorder != null)
-            {
-                VoiceRecorderManager.Instance.recorder.TransmitEnabled = true;
-                VoiceRecorderManager.Instance.recorder.RecordingEnabled = true;
-                Debug.Log($"[RoomManager] VoiceRecorderManager recorder enabled - TransmitEnabled: {VoiceRecorderManager.Instance.recorder.TransmitEnabled}");
-            }
+            if (fusionVoiceClient != null)
+                Apply(fusionVoiceClient.PrimaryRecorder, "Primary Recorder");
 
-            // Find and enable local player's recorder
+            if (VoiceRecorderManager.Instance != null)
+                Apply(VoiceRecorderManager.Instance.recorder, "VoiceRecorderManager recorder");
+
             var players = FindObjectsByType<PlayerNetworkSetup>(FindObjectsSortMode.None);
             foreach (var player in players)
             {
@@ -523,13 +584,32 @@ namespace VertexFormCore
                 {
                     var recorder = player.GetComponentInChildren<Photon.Voice.Unity.Recorder>();
                     if (recorder != null)
-                    {
-                        recorder.TransmitEnabled = true;
-                        recorder.RecordingEnabled = true;
-                        Debug.Log($"[RoomManager] Local player ({player.PlayerName}) recorder enabled - TransmitEnabled: {recorder.TransmitEnabled}");
-                    }
+                        Apply(recorder, $"Local player ({player.PlayerName})");
                 }
             }
+        }
+
+        /// <summary>Fallback when local <see cref="PlayerUIManager"/> is not available yet (e.g. spectator).</summary>
+        private static bool DefaultVoiceTransmitFromProjectSettings()
+        {
+            if (ProjectManager.instance == null || ProjectManager.instance.settingsUI == null ||
+                ProjectManager.instance.settingsUI.defaultSettings == null)
+                return false;
+
+            return ProjectManager.instance.settingsUI.defaultSettings.micType == micType.unmute;
+        }
+
+        /// <summary>
+        /// Must match in-session mute UI: toggling unmute does not write <see cref="SettingClass.micType"/>, so delayed
+        /// <see cref="EnableVoiceRecorder"/> must not overwrite <see cref="Recorder.TransmitEnabled"/> from defaults alone.
+        /// </summary>
+        private bool VoiceTransmitDesiredForLocalPlayer()
+        {
+            var local = GetLocalPlayerSetup();
+            if (local != null && local.playerUIManager != null)
+                return local.playerUIManager.IsLocalVoiceUnmuted;
+
+            return DefaultVoiceTransmitFromProjectSettings();
         }
 
         private FusionAppSettings BuildCustomAppSetting(string region)
@@ -537,6 +617,9 @@ namespace VertexFormCore
             var appSettings = PhotonAppSettings.Global.AppSettings.GetCopy();
             appSettings.UseNameServer = true;
             appSettings.FixedRegion = region.ToLower();
+#if UNITY_WEBGL && !UNITY_EDITOR
+            appSettings.Protocol = ExitGames.Client.Photon.ConnectionProtocol.WebSocketSecure;
+#endif
             return appSettings;
         }
         public void LeaveRoom()
@@ -557,6 +640,10 @@ namespace VertexFormCore
         public void OnPlayerJoined(NetworkRunner runner, PlayerRef player)
         {
             Debug.Log($"[RoomManager] OnPlayerJoined callback triggered for player: {player}, Total players: {runner.SessionInfo.PlayerCount}");
+            if (player == runner.LocalPlayer)
+            {
+                TryConsumePendingVoiceJoin("OnPlayerJoined(Local)");
+            }
 
             StartCoroutine(WaitNCall(2f, () =>
             {
@@ -708,7 +795,7 @@ namespace VertexFormCore
             if (localVRPlayer == null) return;
             var playerSetup = GetLocalPlayerSetup();
             if (playerSetup == null || (playerSetup.notificationParentDesktop == null && playerSetup.notificationParentVR == null)) return;
-            if (ProjectManager.instance.platforms.platformChoice == platform.Desktop)
+            if (ProjectManager.instance.platforms.IsDesktopStylePlatform())
             {
                 playerJoinHolder = playerSetup.notificationParentDesktop;
             }
@@ -726,6 +813,7 @@ namespace VertexFormCore
         {
             Debug.Log($"[RoomManager] OnConnectedToServer called - Connected to Fusion server. Runner: {runner.name}, State: {runner.State}");
             Log("Connected to server - Ready to join sessions");
+            TryConsumePendingVoiceJoin("OnConnectedToServer");
         }
 
         public void OnDisconnectedFromServer(NetworkRunner runner, NetDisconnectReason reason)
@@ -744,6 +832,7 @@ namespace VertexFormCore
         public void OnShutdown(NetworkRunner runner, ShutdownReason shutdownReason)
         {
             Log($"Runner shutdown: {shutdownReason}");
+            _pendingVoiceJoin = false;
 
             // Avoid scene fallback on user-initiated / normal shutdown.
             if (shutdownReason != ShutdownReason.Ok)
@@ -803,6 +892,7 @@ namespace VertexFormCore
         public void OnSceneLoadDone(NetworkRunner runner)
         {
             Debug.Log($"[RoomManager] OnSceneLoadDone - Fusion finished loading scene(s)");
+            TryConsumePendingVoiceJoin("OnSceneLoadDone");
 
             // Notify SceneLoader that the addressable scene is fully loaded by Fusion
             if (SceneLoader.Instance != null && !string.IsNullOrEmpty(mapName))
@@ -813,6 +903,7 @@ namespace VertexFormCore
 
         public void OnSessionListUpdated(NetworkRunner runner, List<SessionInfo> sessionList)
         {
+            TryConsumePendingVoiceJoin("OnSessionListUpdated");
             cashedRooms.Clear();
             roomData.Clear();
 

@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using VertexFormCore;
 using UnityEngine.SceneManagement;
+using VertexForm3D.UI;
 public class MenuManager : MonoBehaviour
 {
     public string worldDataJson
@@ -31,6 +32,9 @@ public class MenuManager : MonoBehaviour
     public GameObject worldScreen;
     public GameObject GuideScreen;
     public GameObject worldInfoScreen;
+
+    [Tooltip("Optional tab/nav button that opens the Main screen. Hidden when UILayoutConfig.showMainPanel is false so users go straight to Places.")]
+    public GameObject mainTabButton;
     public IReadOnlyList<Category> ActiveWorldCategories
     {
         get
@@ -49,6 +53,13 @@ public class MenuManager : MonoBehaviour
     public Sprite starSprite;
     public Sprite unStarSprite;
     [SerializeField] GridScrollViewPager gridScrollViewPager;
+
+    [Header("Unsupported Platform Popup")]
+    public GameObject platformNotSupportedPopup;
+    public TextMeshProUGUI platformNotSupportedText;
+    public bool autoClosePopup = true;
+    public float autoCloseDelay = 3f;
+
     public static MenuManager Instance;
 
     private void Awake()
@@ -61,7 +72,23 @@ public class MenuManager : MonoBehaviour
     void Start()
     {
         LoadWorldData();
+        ApplyMainPanelVisibility();
         Invoke(nameof(InitCatagory), .5f);
+    }
+
+    /// <summary>
+    /// Honors <see cref="UILayoutConfig.showMainPanel"/>: when false, hides the Main tab button
+    /// and opens the Places (world) screen instead of Main on startup so users skip the landing screen.
+    /// </summary>
+    void ApplyMainPanelVisibility()
+    {
+        var cfg = ProjectManager.instance != null ? ProjectManager.instance.uiLayoutConfig : null;
+        bool showMain = cfg == null || cfg.showMainPanel;
+
+        if (mainTabButton != null) mainTabButton.SetActive(showMain);
+
+        if (!showMain && worldScreen != null)
+            OpenWorldScreen();
     }
 
     public void OnTapHome()
@@ -140,7 +167,7 @@ public class MenuManager : MonoBehaviour
         {
             if (filterPlacesNav && !cat.showInPlacesNav) continue;
             GameObject catObj = Instantiate(categoryPrefab, categoryParent);
-            catObj.GetComponent<CategoryItemView>().SetCategory(cat);
+            catObj.GetComponent<CategoryItemView>().SetCategory(cat, this);
         }
     }
 
@@ -161,7 +188,7 @@ public class MenuManager : MonoBehaviour
         Category allCat = new Category();
         allCat.categoryName = "All Places";
         allCat.environments = allWorlds;
-        catObj.GetComponent<CategoryItemView>().SetCategory(allCat);
+        catObj.GetComponent<CategoryItemView>().SetCategory(allCat, this);
 
         foreach (var world in allWorlds)
         {
@@ -181,7 +208,7 @@ public class MenuManager : MonoBehaviour
         starCategoryItemView.category = new Category();
         starCategoryItemView.category.categoryName = "Favorites";
         starCategoryItemView.category.environments = favourites;
-        favcat.GetComponent<CategoryItemView>().SetCategory(starCategoryItemView.category);
+        favcat.GetComponent<CategoryItemView>().SetCategory(starCategoryItemView.category, this);
     }
     public void OnTapCategory(Category cat)
     {
@@ -202,7 +229,7 @@ public class MenuManager : MonoBehaviour
         {
             GameObject worldObj = Instantiate(worldPrefab, worldParent);
             gridScrollViewPager.AddItem(worldObj);
-            worldObj.GetComponent<WorldItemView>().SetWorldData(world);
+            worldObj.GetComponent<WorldItemView>().SetWorldData(world, this);
         }
     }
 
@@ -218,6 +245,47 @@ public class MenuManager : MonoBehaviour
     public void CloseWorldInfoScreen()
     {
         worldInfoScreen.SetActive(false);
+    }
+
+    public void ShowUnsupportedPlatformPopup(WorldData wd)
+    {
+        if (platformNotSupportedPopup == null) return;
+        var pl = ProjectManager.instance.platforms;
+        string currentPlatform = GetCurrentPlatformDisplayName(pl);
+        var supported = new List<string>();
+        if (wd.Desktop) supported.Add("Desktop");
+        if (wd.VR) supported.Add("VR");
+        if (wd.WebGPU) supported.Add("WebGPU");
+        if (wd.WebXR) supported.Add("WebXR");
+        if (wd.Mobile) supported.Add("WebXR/Mobile");
+        string supportedList = supported.Count > 0 ? string.Join(", ", supported) : "None";
+        if (platformNotSupportedText != null)
+            platformNotSupportedText.text = $"Not available on {currentPlatform}.\nPlease use supported platforms that are checked in Platform Supported in world:\n{supportedList}";
+        platformNotSupportedPopup.SetActive(true);
+        if (autoClosePopup)
+        {
+            CancelInvoke(nameof(CloseUnsupportedPlatformPopup));
+            Invoke(nameof(CloseUnsupportedPlatformPopup), autoCloseDelay);
+        }
+    }
+
+    public void CloseUnsupportedPlatformPopup()
+    {
+        if (platformNotSupportedPopup != null)
+            platformNotSupportedPopup.SetActive(false);
+    }
+
+    string GetCurrentPlatformDisplayName(Platforms pl)
+    {
+        if (pl.webGpuBrowserKind == WebGpuBrowserKind.WebXRBrowser) return "WebXR";
+        if (pl.webGpuBrowserKind == WebGpuBrowserKind.MobileBrowser) return "WebXR/Mobile";
+        return pl.platformChoice switch
+        {
+            platform.VR => "VR",
+            platform.Desktop => "Desktop",
+            platform.WebGPU => "WebGPU",
+            _ => pl.platformChoice.ToString()
+        };
     }
     public void HandleScreen(GameObject screen)
     {

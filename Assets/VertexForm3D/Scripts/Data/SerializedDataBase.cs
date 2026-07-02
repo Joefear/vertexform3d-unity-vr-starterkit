@@ -44,11 +44,18 @@ public class WorldData
     public string worldName;
     public string worldKey;
     public string worldImagePath;
-    [TextArea(3,10)]
+    [TextArea(3, 10)]
     public string worldDescription;
     public SceneProvider sceneProvider;
     public Sprite worldImage;
     public bool flyMode = true;
+    [Header("Platform Supported")]
+    public bool Desktop = true;
+    public bool VR = true;
+    public bool WebGPU = true;
+    public bool WebXR = true;
+    [Tooltip("WebXR on a mobile browser (WebGpuBrowserKind.MobileBrowser)")]
+    public bool Mobile = true;
     // Creates a deep copy to ensure no shared references
     public WorldData Clone()
     {
@@ -60,7 +67,12 @@ public class WorldData
             worldDescription = this.worldDescription, // String is immutable
             sceneProvider = this.sceneProvider, // Enum is value type
             worldImage = this.worldImage, // Sprite is reference type; assuming read-only usage
-            flyMode = this.flyMode // Bool is value type
+            flyMode = this.flyMode, // Bool is value type
+            Desktop = this.Desktop,
+            VR = this.VR,
+            WebGPU = this.WebGPU,
+            WebXR = this.WebXR,
+            Mobile = this.Mobile
         };
     }
 }

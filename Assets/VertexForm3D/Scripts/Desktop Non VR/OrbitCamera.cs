@@ -2,11 +2,11 @@ using Photon.Voice;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 
 public class OrbitCamera : MonoBehaviour
 {
+    [SerializeField] private XRRigController rigController;
     [Header("Target Settings")]
     [SerializeField] private Transform target; // The object to orbit around
     public Vector3 targetOffset = Vector3.up * 1f; // Offset from target's position (e.g., head height)
@@ -47,9 +47,12 @@ public class OrbitCamera : MonoBehaviour
     private Vector3 defaultTargetOffset;
     private void Awake()
     {
+        if (rigController == null)
+            rigController = GetComponentInParent<XRRigController>();
+
         defaultTargetOffset = targetOffset;
         Debug.Log("[OrbitCamera] Awake started");
-        if (ProjectManager.instance.platforms.platformChoice == platform.VR)
+        if (ProjectManager.instance.platforms.IsVrStylePlatform())
         {
             Destroy(this);
             return;
@@ -80,20 +83,39 @@ public class OrbitCamera : MonoBehaviour
         pressed.Enable();
         Debug.Log("[OrbitCamera] Awake: input actions enabled (pressed, axis, scroll)");
 
-        pressed.performed += _ =>
-        {
-            if (!IsPointerOverUI())
-            {
-                if (this.isActiveAndEnabled)
-                {
-                    StartCoroutine(Rotate());
-                }
-            }
-        };
-        pressed.canceled += _ => { rotateAllowed = false; };
-        axis.performed += context => { rotationValue = context.ReadValue<Vector2>(); };
-        scroll.performed += context => { HandleZoom(context.ReadValue<float>()); };
+        pressed.performed += OnPressedPerformed;
+        pressed.canceled += OnPressedCanceled;
+        axis.performed += OnAxisPerformed;
+        scroll.performed += OnScrollPerformed;
     }
+
+    private void OnPressedPerformed(InputAction.CallbackContext _)
+    {
+        if (rigController != null && rigController.IsUiInputLocked)
+            return;
+        if (!DesktopPointerUIHelper.IsPointerOverUIThisFrame())
+        {
+            if (isActiveAndEnabled)
+                StartCoroutine(Rotate());
+        }
+    }
+
+    private void OnPressedCanceled(InputAction.CallbackContext _) => rotateAllowed = false;
+
+    private void OnAxisPerformed(InputAction.CallbackContext context)
+    {
+        if (rigController != null && rigController.IsUiInputLocked)
+        {
+            rotationValue = Vector2.zero;
+            return;
+        }
+        rotationValue = DesktopMobileControlSettings.SuppressLookWhileMultiTouch
+            ? Vector2.zero
+            : context.ReadValue<Vector2>();
+    }
+
+    private void OnScrollPerformed(InputAction.CallbackContext context) =>
+        HandleZoom(context.ReadValue<float>());
     public void ResetTargetOffset()
     {
         targetOffset = defaultTargetOffset;
@@ -104,28 +126,22 @@ public class OrbitCamera : MonoBehaviour
     }
     private void OnDestroy()
     {
-        pressed.performed -= _ =>
+        if (pressed != null)
         {
-            if (!IsPointerOverUI())
-            {
-                if (this.isActiveAndEnabled)
-                {
-                    StartCoroutine(Rotate());
-                }
-            }
-        };
-        pressed.canceled -= _ => { rotateAllowed = false; };
-        axis.performed -= context => { rotationValue = context.ReadValue<Vector2>(); };
-        scroll.performed -= context => { HandleZoom(context.ReadValue<float>()); };
-        pressed.Disable();
-        axis.Disable();
-        scroll.Disable();
-    }
-
-    private bool IsPointerOverUI()
-    {
-        // Check if the pointer is over a UI element
-        return EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            pressed.performed -= OnPressedPerformed;
+            pressed.canceled -= OnPressedCanceled;
+            pressed.Disable();
+        }
+        if (axis != null)
+        {
+            axis.performed -= OnAxisPerformed;
+            axis.Disable();
+        }
+        if (scroll != null)
+        {
+            scroll.performed -= OnScrollPerformed;
+            scroll.Disable();
+        }
     }
 
     private IEnumerator Rotate()
@@ -133,6 +149,18 @@ public class OrbitCamera : MonoBehaviour
         rotateAllowed = true;
         while (rotateAllowed)
         {
+            if (rigController != null && rigController.IsUiInputLocked)
+            {
+                rotationValue = Vector2.zero;
+                previousValue = Vector2.zero;
+                yield return null;
+                continue;
+            }
+            if (DesktopMobileControlSettings.SuppressLookWhileMultiTouch)
+            {
+                rotationValue = Vector2.zero;
+                previousValue = Vector2.zero;
+            }
             if (previousValue != rotationValue)
             {
                 float mouseX = rotationValue.x * rotationSpeed * Time.deltaTime;
@@ -146,6 +174,19 @@ public class OrbitCamera : MonoBehaviour
             }
             yield return null;
         }
+    }
+
+    /// <summary>Third-person mobile: apply pointer delta in the same units as the Look action (pixels per frame).</summary>
+    public void ApplyTouchLookDelta(Vector2 deltaPixels)
+    {
+        if (!isActiveAndEnabled || target == null)
+            return;
+        if (rigController != null && rigController.IsUiInputLocked)
+            return;
+        float mouseX = deltaPixels.x * rotationSpeed * Time.deltaTime;
+        float mouseY = deltaPixels.y * rotationSpeed * Time.deltaTime * (invertY ? -1 : 1);
+        currentYaw += mouseX;
+        currentPitch = Mathf.Clamp(currentPitch + mouseY, minVerticalAngle, maxVerticalAngle);
     }
 
     private static bool _loggedNullTarget;
@@ -181,6 +222,9 @@ public class OrbitCamera : MonoBehaviour
 
     private void HandleZoom(float scrollInput)
     {
+        if (rigController != null && rigController.IsUiInputLocked)
+            return;
+
         if (!_loggedFirstOrbitZoom)
         {
             Debug.Log($"[OrbitCamera] HandleZoom: first orbit scroll received, scrollInput={scrollInput}");
@@ -189,6 +233,11 @@ public class OrbitCamera : MonoBehaviour
         targetDistance -= scrollInput * zoomSpeed;
         targetDistance = Mathf.Clamp(targetDistance, minZoomDistance, maxZoomDistance);
     }
+
+    /// <summary>
+    /// Scroll-equivalent zoom from touch pinch (or other code paths). Mouse wheel uses the Input System <see cref="scroll"/> action in <see cref="Awake"/>.
+    /// </summary>
+    public void ApplyExternalScroll(float scrollInput) => HandleZoom(scrollInput);
 
     /// <summary>
     /// Finds the closest blocking hit along the ray. Ignored colliders are skipped so a farther

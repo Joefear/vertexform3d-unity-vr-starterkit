@@ -59,7 +59,6 @@ namespace VertexFormCore
 
         [SerializeField] GameObject[] nonSyncableObjects;
 
-        public CustomAvatarScriptable customAvatarScriptable;
         public AvatarHolder avatarHolder;
         public Transform bodyTransform;
         public Transform headTransform;
@@ -68,7 +67,11 @@ namespace VertexFormCore
         [Networked] public int AvatarSelectionNumber { get; set; }
         [Networked] public NetworkString<_16> PlayerName { get; set; }
         [Networked] public platform Platform { get; set; }
+        [Networked] public WebGpuBrowserKind WebGpuBrowserKind { get; set; }
 
+        public bool NetworkedIsVrStyle() => PlatformPresentation.IsVrStyle(Platform, WebGpuBrowserKind);
+
+        public bool NetworkedIsDesktopStyle() => PlatformPresentation.IsDesktopStyle(Platform, WebGpuBrowserKind);
 
         // Track if avatar has been initialized for remote players
         private bool avatarInitialized = false;
@@ -98,9 +101,9 @@ namespace VertexFormCore
             AvatarInputConverter avatarInputConverter = LocalXRRigGameobject.GetComponent<AvatarInputConverter>();
             Debug.Log("-->on selected avatar " + avatarSelectionNumber + "for mine? " + Object.HasInputAuthority);
 
-            GameObject body1 = Instantiate(customAvatarScriptable.avatarDatas[avatarSelectionNumber].body);
+            GameObject body1 = Instantiate(ProjectManager.instance.uiLayoutConfig.avatarDatas[avatarSelectionNumber].body);
             body1.transform.SetParent(bodyTransform, false);
-            GameObject head1 = Instantiate(customAvatarScriptable.avatarDatas[avatarSelectionNumber].head);
+            GameObject head1 = Instantiate(ProjectManager.instance.uiLayoutConfig.avatarDatas[avatarSelectionNumber].head);
             head1.transform.SetParent(headTransform, false);
             body1.transform.localPosition = head1.transform.localPosition = Vector3.zero;
             avatarHolder.SetAvatar(head1, body1);
@@ -147,9 +150,17 @@ namespace VertexFormCore
             if (Object.HasInputAuthority)
             {
                 PlayerName = ProjectManager.UserName;
-                Platform = ProjectManager.instance != null && ProjectManager.instance.platforms != null
-                    ? ProjectManager.instance.platforms.platformChoice
-                    : platform.Desktop;
+                if (ProjectManager.instance != null && ProjectManager.instance.platforms != null)
+                {
+                    Platforms pl = ProjectManager.instance.platforms;
+                    Platform = pl.platformChoice;
+                    WebGpuBrowserKind = pl.webGpuBrowserKind;
+                }
+                else
+                {
+                    Platform = platform.Desktop;
+                    WebGpuBrowserKind = WebGpuBrowserKind.None;
+                }
             }
             Debug.Log("-->spawning player");
             StartCoroutine(InitializePlayer());
@@ -187,8 +198,9 @@ namespace VertexFormCore
                 // PlayerName and Platform already set in Spawned() for immediate sync; ensure consistency here
                 if (ProjectManager.instance != null && ProjectManager.instance.platforms != null)
                 {
-
-                    Platform = ProjectManager.instance.platforms.platformChoice;
+                    Platforms pl = ProjectManager.instance.platforms;
+                    Platform = pl.platformChoice;
+                    WebGpuBrowserKind = pl.webGpuBrowserKind;
                 }
 
             }
@@ -215,6 +227,8 @@ namespace VertexFormCore
                 {
                     InitializeSelectedAvatarModel(avatarSelectionNumber);
                 }
+                DesktopAddressableSceneUI.Instance.SetupDesktopAddressableSceneUI(this);
+
 
                 Debug.Log("-->avatar initialized");
                 // foreach (GameObject head in AvatarHeadGameobjects)
@@ -262,7 +276,6 @@ namespace VertexFormCore
 
                 Debug.Log("-->remote player avatar initialized");
             }
-
             if (PlayerName_Text != null)
             {
                 Debug.Log("-->setting player name text");

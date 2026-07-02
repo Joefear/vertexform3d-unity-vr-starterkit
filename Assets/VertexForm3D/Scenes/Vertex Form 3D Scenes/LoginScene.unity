@@ -462,10 +462,6 @@ PrefabInstance:
       propertyPath: m_Name
       value: LoginSceneComponent
       objectReference: {fileID: 0}
-    - target: {fileID: 8421066175226093702, guid: 17702390d522bd6429139623b344358f, type: 3}
-      propertyPath: versionText
-      value: 
-      objectReference: {fileID: 753928277}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -518,7 +514,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 3845066483474366430, guid: ec3219196007b5a42aa25d5003165a08, type: 3}
       propertyPath: m_LocalPosition.x
-      value: 2.11
+      value: 2.54
       objectReference: {fileID: 0}
     - target: {fileID: 3845066483474366430, guid: ec3219196007b5a42aa25d5003165a08, type: 3}
       propertyPath: m_LocalPosition.y

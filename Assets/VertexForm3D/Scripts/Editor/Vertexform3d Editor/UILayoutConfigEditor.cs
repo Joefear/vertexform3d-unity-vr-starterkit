@@ -3,7 +3,6 @@ using System.IO;
 using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
-using UnityEngine.UI;
 
 
 [CustomEditor(typeof(UILayoutConfig))]
@@ -11,10 +10,12 @@ public class UILayoutConfigEditor : Editor
 {
     private SerializedProperty _leftSectionEnabled;
     private SerializedProperty _leftSectionText;
+    private SerializedProperty _showMainPanel;
     private SerializedProperty _mainSectionPanels;
     private SerializedProperty _worldCategories;
     private SerializedProperty _rightSectionEnabled;
     private SerializedProperty _mirror;
+    private SerializedProperty _showAvatarBodyInFirstPerson;
     private SerializedProperty _avatarDatas;
 
     private bool _foldPlatform = true;
@@ -29,10 +30,12 @@ public class UILayoutConfigEditor : Editor
     {
         _leftSectionEnabled = serializedObject.FindProperty("leftSectionEnabled");
         _leftSectionText = serializedObject.FindProperty("leftSectionText");
+        _showMainPanel = serializedObject.FindProperty("showMainPanel");
         _mainSectionPanels = serializedObject.FindProperty("mainSectionPanels");
         _worldCategories = serializedObject.FindProperty("worldCategories");
         _rightSectionEnabled = serializedObject.FindProperty("rightSectionEnabled");
         _mirror = serializedObject.FindProperty("mirror");
+        _showAvatarBodyInFirstPerson = serializedObject.FindProperty("showAvatarBodyInFirstPerson");
         _avatarDatas = serializedObject.FindProperty("avatarDatas");
 
         serializedObject.Update();
@@ -83,19 +86,17 @@ public class UILayoutConfigEditor : Editor
         GUILayout.Space(6);
     }
 
-    private const string MainMapPrefabFileName = "MainMap.prefab";
-    private const string MainMapDesktopPrefabFileName = "MainMap Desktop.prefab";
-
-    /// <summary>All prefab assets named MainMap.prefab or MainMap Desktop.prefab (avoids LoadPrefabContents on unrelated/broken prefabs).</summary>
+    /// <summary>All prefab assets where the prefab root has a MainMap component.</summary>
     private static List<string> FindMainMapPrefabPaths()
     {
         var paths = new List<string>();
         foreach (string guid in AssetDatabase.FindAssets("t:Prefab"))
         {
             string path = AssetDatabase.GUIDToAssetPath(guid);
-            string fileName = Path.GetFileName(path);
-            if (string.Equals(fileName, MainMapPrefabFileName, System.StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(fileName, MainMapDesktopPrefabFileName, System.StringComparison.OrdinalIgnoreCase))
+            var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (prefabAsset == null)
+                continue;
+            if (prefabAsset.GetComponent<MainMap>() != null)
                 paths.Add(path);
         }
         return paths;
@@ -113,7 +114,7 @@ public class UILayoutConfigEditor : Editor
         List<string> mainMapPaths = FindMainMapPrefabPaths();
         if (mainMapPaths.Count == 0)
         {
-            Debug.LogWarning($"UILayoutConfig: No '{MainMapPrefabFileName}' or '{MainMapDesktopPrefabFileName}' found. Rename your menu prefab accordingly or assign uiLayoutConfig on it manually.");
+            Debug.LogWarning("UILayoutConfig: No prefabs found where the prefab root has MainMap. Assign uiLayoutConfig manually if needed.");
             return;
         }
 
@@ -127,7 +128,6 @@ public class UILayoutConfigEditor : Editor
             GameObject contents = null;
             bool usingOpenPrefabStage = currentPrefabStage != null &&
                                         string.Equals(currentPrefabStage.assetPath, path, System.StringComparison.OrdinalIgnoreCase);
-            bool isDesktopPrefab = string.Equals(Path.GetFileName(path), MainMapDesktopPrefabFileName, System.StringComparison.OrdinalIgnoreCase);
 
             if (usingOpenPrefabStage)
             {
@@ -148,16 +148,16 @@ public class UILayoutConfigEditor : Editor
 
             if (contents == null) continue;
 
-            MainMap[] mainMaps = contents.GetComponentsInChildren<MainMap>(true);
-            if (mainMaps.Length == 0)
+            MainMap rootMainMap = contents.GetComponent<MainMap>();
+            if (rootMainMap == null)
             {
                 if (!usingOpenPrefabStage)
                     PrefabUtility.UnloadPrefabContents(contents);
-                Debug.LogWarning($"UILayoutConfig: '{path}' has no MainMap component.");
+                Debug.LogWarning($"UILayoutConfig: '{path}' has no MainMap on the prefab root. Skipping apply.");
                 continue;
             }
 
-            foreach (MainMap mm in mainMaps)
+            MainMap mm = rootMainMap;
             {
                 var so = new SerializedObject(mm);
                 var prop = so.FindProperty("uiLayoutConfig");
@@ -174,10 +174,7 @@ public class UILayoutConfigEditor : Editor
                 }
 
                 Undo.RecordObject(mm, "Apply UILayoutConfig to MainMap");
-                if (isDesktopPrefab)
-                    ApplyDesktopMainPanelImagesOnly(mm, config);
-                else
-                    mm.ApplyLayoutFromConfig();
+                mm.ApplyLayoutFromConfig();
                 EditorUtility.SetDirty(mm);
             }
 
@@ -198,67 +195,48 @@ public class UILayoutConfigEditor : Editor
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
 
-        Debug.Log($"UILayoutConfig: Baked config into {prefabsModified} MainMap prefab asset(s) (MainMap/MainMap Desktop). Reference updates: {refsUpdated}. Ensure ProjectManager in your bootstrap scene uses this same config for Places/avatars.");
-    }
-
-    private static void ApplyDesktopMainPanelImagesOnly(MainMap mm, UILayoutConfig config)
-    {
-        if (mm == null || config == null) return;
-        if (config.mainSectionPanels == null || config.mainSectionPanels.Count == 0) return;
-
-        var mainPanel = config.mainSectionPanels[UILayoutConfig.MainPanelIndex];
-
-        var mmSO = new SerializedObject(mm);
-        var logoProp = mmSO.FindProperty("logoImage");
-        var bgProp = mmSO.FindProperty("backgroundImage");
-        mmSO.ApplyModifiedPropertiesWithoutUndo();
-
-        var logo = logoProp != null ? logoProp.objectReferenceValue as Image : null;
-        var bg = bgProp != null ? bgProp.objectReferenceValue as Image : null;
-
-        if (logo != null)
-        {
-            Undo.RecordObject(logo, "Apply Desktop MainMap Logo");
-            logo.sprite = mainPanel.logoImage;
-            EditorUtility.SetDirty(logo);
-        }
-
-        if (bg != null)
-        {
-            Undo.RecordObject(bg, "Apply Desktop MainMap Background");
-            bg.sprite = mainPanel.backgroundImage;
-            EditorUtility.SetDirty(bg);
-        }
+        Debug.Log($"UILayoutConfig: Baked config into {prefabsModified} MainMap prefab asset(s) with root-level MainMap. Reference updates: {refsUpdated}. Ensure ProjectManager in your bootstrap scene uses this same config for Places/avatars.");
     }
 
     private static void DrawHighlightPrefabButtons()
     {
         EditorGUILayout.BeginHorizontal();
         GUILayout.FlexibleSpace();
-        DrawHighlightPrefabButton(MainMapDesktopPrefabFileName, "Highlight Desktop Prefab");
+        DrawHighlightPrefabButton(requireDesktopInName: true, "Highlight Desktop Prefab");
         GUILayout.Space(6);
-        DrawHighlightPrefabButton(MainMapPrefabFileName, "Highlight VR Prefab");
+        DrawHighlightPrefabButton(requireDesktopInName: false, "Highlight VR Prefab");
         EditorGUILayout.EndHorizontal();
     }
 
-    private static void DrawHighlightPrefabButton(string prefabFileName, string buttonLabel)
+    private static void DrawHighlightPrefabButton(bool requireDesktopInName, string buttonLabel)
     {
         if (GUILayout.Button(buttonLabel, EditorStyles.miniButton))
         {
             foreach (string guid in AssetDatabase.FindAssets("t:Prefab"))
             {
                 string path = AssetDatabase.GUIDToAssetPath(guid);
-                if (string.Equals(Path.GetFileName(path), prefabFileName, System.StringComparison.OrdinalIgnoreCase))
+                var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (prefabAsset == null)
+                    continue;
+
+                // First requirement: prefab root itself owns MainMap.
+                if (prefabAsset.GetComponent<MainMap>() == null)
+                    continue;
+
+                // Second requirement: classify by whether the prefab name contains "Desktop".
+                string fileName = Path.GetFileNameWithoutExtension(path);
+                bool hasDesktopInName = fileName.IndexOf("Desktop", System.StringComparison.OrdinalIgnoreCase) >= 0;
+                if (hasDesktopInName != requireDesktopInName)
+                    continue;
+
+                var obj = AssetDatabase.LoadAssetAtPath<Object>(path);
+                if (obj != null)
                 {
-                    var obj = AssetDatabase.LoadAssetAtPath<Object>(path);
-                    if (obj != null)
-                    {
-                        PrefabStageUtility.OpenPrefab(path);
-                        EditorGUIUtility.PingObject(obj);
-                        Selection.activeObject = obj;
-                    }
-                    break;
+                    PrefabStageUtility.OpenPrefab(path);
+                    EditorGUIUtility.PingObject(obj);
+                    Selection.activeObject = obj;
                 }
+                break;
             }
         }
     }
@@ -338,8 +316,14 @@ public class UILayoutConfigEditor : Editor
 
                 if (i == UILayoutConfig.MainPanelIndex)
                 {
-                    EditorGUILayout.PropertyField(panel.FindPropertyRelative("backgroundImage"), new GUIContent("Background Image"));
-                    EditorGUILayout.PropertyField(panel.FindPropertyRelative("logoImage"), new GUIContent("Logo Image"));
+                    EditorGUILayout.PropertyField(_showMainPanel,
+                        new GUIContent("Show Main Panel",
+                            "When off, the Main tab is hidden and the UI opens directly on Places. Use this if the logo/background landing screen feels like an extra step."));
+                    using (new EditorGUI.DisabledScope(!_showMainPanel.boolValue))
+                    {
+                        EditorGUILayout.PropertyField(panel.FindPropertyRelative("backgroundImage"), new GUIContent("Background Image"));
+                        EditorGUILayout.PropertyField(panel.FindPropertyRelative("logoImage"), new GUIContent("Logo Image"));
+                    }
                 }
                 else if (i == UILayoutConfig.PlacesPanelIndex)
                 {
@@ -368,6 +352,9 @@ public class UILayoutConfigEditor : Editor
     {
         EditorGUILayout.PropertyField(_rightSectionEnabled, new GUIContent("Enable"));
         EditorGUILayout.PropertyField(_mirror, new GUIContent("Mirror"));
+        EditorGUILayout.PropertyField(_showAvatarBodyInFirstPerson,
+            new GUIContent("Show Avatar Body In First Person",
+                "Desktop/Mobile only. When enabled, the local player's avatar body remains visible in first-person view. Disable to hide the body and avoid camera clipping."));
         EditorGUILayout.PropertyField(_avatarDatas, new GUIContent("Avatar Datas"));
 
 

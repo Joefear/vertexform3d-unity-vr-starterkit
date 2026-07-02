@@ -1,14 +1,5 @@
 {
   "dependencies": {
-    "com.boxqkrtm.ide.cursor": {
-      "version": "https://github.com/boxqkrtm/com.unity.ide.cursor.git",
-      "depth": 0,
-      "source": "git",
-      "dependencies": {
-        "com.unity.test-framework": "1.1.9"
-      },
-      "hash": "fd8ff1fb700caf062eb5cce364c1d0a85f99ebe6"
-    },
     "com.cesium.unity": {
       "version": "1.20.0",
       "depth": 0,
@@ -20,6 +11,24 @@
         "com.unity.inputsystem": "1.4.2"
       },
       "url": "https://unity.pkg.cesium.com"
+    },
+    "com.de-panther.webxr": {
+      "version": "0.22.1",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {
+        "com.unity.xr.management": "3.2.13"
+      },
+      "url": "https://package.openupm.com"
+    },
+    "com.de-panther.webxr-interactions": {
+      "version": "0.22.0",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {
+        "com.de-panther.webxr": "0.22.0"
+      },
+      "url": "https://package.openupm.com"
     },
     "com.unity.2d.sprite": {
       "version": "1.0.0",

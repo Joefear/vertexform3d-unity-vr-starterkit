@@ -8,29 +8,44 @@ using System;
 
 public class DesktopAddressableSceneUI : MonoBehaviour
 {
+    public static DesktopAddressableSceneUI Instance;
     public Canvas desktopCanvas;
     public GameObject journeysUI;
+    public GameObject grabUI;
     public Image modeImage;
     public TMP_Text modeText;
     public Sprite firstPersonSprite;
     public Sprite thirdPersonSprite;
-    public TMP_Text[] flyText;
     public Button flyButton;
+
+    public Button muteButton;
+    public Sprite muteOnSprite;
+    public Sprite muteOffSprite;
+
+    public Sprite flyOnSprite;
+    public Sprite flyOffSprite;
+
+    private PlayerNetworkSetup pns;
 
     void Start()
     {
-        if (ProjectManager.instance.platforms.platformChoice == platform.Desktop)
+        desktopCanvas.gameObject.SetActive(false);
+        if (Instance == null)
         {
-            StartCoroutine(IEAssignModeEvent());
-            modeImage.GetComponent<Button>().onClick.AddListener(() =>
-            {
-                var xrRig = RoomManager.Instance?.localVRPlayer?.GetComponent<XRRigController>();
-                if (xrRig == null) return;
-                if (xrRig.isThirdPerson)
-                    xrRig.SwitchToFirstPerson();
-                else
-                    xrRig.SwitchToThirdPerson();
-            });
+            Instance = this;
+
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+    public void SetupDesktopAddressableSceneUI(PlayerNetworkSetup pns)
+    {
+        if (ProjectManager.instance.platforms.IsDesktopStylePlatform())
+        {
+            this.pns = pns;
+            AssignModeEvent(pns);
         }
         else
         {
@@ -38,44 +53,63 @@ public class DesktopAddressableSceneUI : MonoBehaviour
         }
     }
 
-
     public void ManageFlyUI()
     {
+        if (flyButton == null) return;
         flyButton.interactable = true;
-        var pns = RoomManager.Instance?.GetLocalPlayerSetup();
         if (pns != null && pns.playerUIManager.IsFlying())
         {
             Debug.Log("Fly Mode is enabled");
-            foreach (TMP_Text txt in flyText)
-            {
-                txt.color = Color.green;
-                flyButton.image.color = Color.green;
-            }
-            flyText[1].text = "- Fly is on";
+            flyButton.image.sprite = flyOnSprite;
         }
         else
         {
             Debug.Log("Fly Mode is disabled");
-            foreach (TMP_Text txt in flyText)
-            {
-                txt.color = Color.red;
-            }
-            flyButton.image.color = Color.red;
-            flyText[1].text = "- Fly is off";
+            flyButton.image.sprite = flyOffSprite;
         }
     }
-
-    IEnumerator IEAssignModeEvent()
+    public void ManageMuteUI(bool isVoiceEnabled)
     {
-        while (RoomManager.Instance == null || RoomManager.Instance.GetLocalPlayerSetup() == null)
+        if (muteButton == null) return;
+
+        if (isVoiceEnabled)
         {
-            yield return null;
+            Debug.Log("Voice is enabled");
+            muteButton.image.sprite = muteOnSprite;
+
         }
-        yield return new WaitForSeconds(.5f);
-        var xrRig = RoomManager.Instance.localVRPlayer.GetComponent<XRRigController>();
-        var pns = RoomManager.Instance.GetLocalPlayerSetup();
-        desktopCanvas.gameObject.SetActive(true);
-        if (xrRig == null || pns == null) yield break;
+        else
+        {
+            Debug.Log("Voice is disabled");
+            muteButton.image.sprite = muteOffSprite;
+        }
+
+    }
+
+    void AssignModeEvent(PlayerNetworkSetup pns)
+    {
+
+        var xrRig = pns.GetComponent<XRRigController>();
+        PersonMode mode = (PersonMode)PlayerPrefs.GetInt("VertexForm3D_PersonMode", 0);
+        if (mode == PersonMode.Third)
+        {
+            xrRig.SwitchToThirdPerson();
+        }
+        else
+        {
+            xrRig.SwitchToFirstPerson();
+        }
+        var modeBtn = modeImage != null ? modeImage.GetComponent<Button>() : null;
+        if (modeBtn != null)
+        {
+            modeBtn.onClick.AddListener(() =>
+            {
+                if (xrRig.isThirdPerson)
+                    xrRig.SwitchToFirstPerson();
+                else
+                    xrRig.SwitchToThirdPerson();
+            });
+        }
         if (xrRig.isThirdPerson)
         {
             modeImage.sprite = thirdPersonSprite;
@@ -86,8 +120,17 @@ public class DesktopAddressableSceneUI : MonoBehaviour
             modeImage.sprite = firstPersonSprite;
             modeText.text = "First Person mode";
         }
-
-        flyButton.onClick.AddListener(() => { pns.playerUIManager.OnTapFlyToggle(); Invoke(nameof(ManageFlyUI), .1f); });
+        if (muteButton != null)
+        {
+            muteButton.onClick.AddListener(() =>
+            {
+                pns.playerUIManager.OnTapVoiceToggle(); Invoke(nameof(ManageMuteUI), .1f);
+            });
+        }
+        pns.playerUIManager.onVoiceModeChanged += ManageMuteUI;
+        ManageMuteUI(pns.playerUIManager.IsVoiceEnabled());
+        if (flyButton != null)
+            flyButton.onClick.AddListener(() => { pns.playerUIManager.OnTapFlyToggle(); Invoke(nameof(ManageFlyUI), .1f); });
         pns.playerUIManager.onFlyModeChanged += ManageFlyUI;
         ManageFlyUI();
 
@@ -102,25 +145,30 @@ public class DesktopAddressableSceneUI : MonoBehaviour
             modeText.text = "Third Person mode";
         });
 
+        // Body visibility is handled by AvatarHolder (respects showAvatarBodyInFirstPerson and keeps shadows).
+        pns.avatarHolder?.ApplyBodyVisibilityForPersonMode(xrRig.isThirdPerson);
+
+        desktopCanvas.gameObject.SetActive(true);
+
     }
 
     public void ShowGrabItem()
     {
-        journeysUI.SetActive(true);
+        grabUI.SetActive(true);
     }
     public void HideGrabItem()
     {
-        journeysUI.SetActive(false);
+        grabUI.SetActive(false);
     }
     public void OnTapMenuButton()
     {
-        var pns = RoomManager.Instance?.GetLocalPlayerSetup();
-        if (pns != null) pns.playerUIManager.HandleMenuUI();
+        if (pns?.playerUIManager != null)
+            pns.playerUIManager.HandleMenuUI();
     }
 
     public void OnTapSettingButton()
     {
-        var pns = RoomManager.Instance?.GetLocalPlayerSetup();
-        if (pns != null) pns.playerUIManager.HandleSettingUI();
+        if (pns?.playerUIManager != null)
+            pns.playerUIManager.HandleSettingUI();
     }
 }

@@ -2,7 +2,6 @@ using Fusion;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.EventSystems; // Required for UI detection
 using UnityEngine.InputSystem;
 using VertexFormCore;
 using UnityEngine.Events;
@@ -12,6 +11,7 @@ using UnityEngine.SceneManagement; // For List in raycasting
 
 public class XRRigController : MonoBehaviour
 {
+    private const string PersonModePrefsKey = "VertexForm3D_PersonMode";
     public bool isMultiplayer;
     public PlayerNetworkSetup playerNetworkSetup;
     [SerializeField] private NetworkObject networkObject;
@@ -58,6 +58,8 @@ public class XRRigController : MonoBehaviour
     public Vector2 previousRotation;
     private bool rotateAllowed;
     public bool isHoweringUI;
+    private bool isUiInputLocked;
+    public bool IsUiInputLocked => isUiInputLocked;
     private static bool _loggedFirstInput;
     private bool _loggedWrongMode;
     private void Awake()
@@ -82,10 +84,11 @@ public class XRRigController : MonoBehaviour
         }
         else
         {
-            Debug.Log("Single-player path: " + ProjectManager.instance.platforms.platformChoice + " " + platform.VR);
-            SetPlatformProperty(ProjectManager.instance.platforms.platformChoice == platform.VR);
-            bool isVR = ProjectManager.instance.platforms.platformChoice == platform.VR;
-            Debug.Log($"[XRRigController] Single-player path - isVR={isVR}, platform={ProjectManager.instance.platforms.platformChoice}");
+            Platforms pl = ProjectManager.instance.platforms;
+            Debug.Log("Single-player path: " + pl.platformChoice + " webKind=" + pl.webGpuBrowserKind);
+            bool isVR = pl.IsVrStylePlatform();
+            SetPlatformProperty(isVR);
+            Debug.Log($"[XRRigController] Single-player path - isVR={isVR}, platform={pl.platformChoice}");
 
             foreach (GameObject go in VRObjects)
             {
@@ -100,7 +103,7 @@ public class XRRigController : MonoBehaviour
                 tpd.enabled = isVR;
             }
             IAM.enabled = XRIMM.enabled = isVR;
-            if (ProjectManager.instance.platforms.platformChoice == platform.Desktop)
+            if (ProjectManager.instance.platforms.IsDesktopStylePlatform())
             {
                 Debug.Log("[XRRigController] Single-player Desktop: calling AssignInputActions");
                 AssignInputActions();
@@ -266,17 +269,6 @@ public class XRRigController : MonoBehaviour
 
         HandleMovement();
         _loggedWrongMode = false;
-        if (Input.GetKeyDown(KeyCode.Q))
-        {
-            if (isMultiplayer)
-            {
-                RoomManager.Instance.LeaveRoomAndLoadOnBoardingScene();
-            }
-            else
-            {
-                SceneManager.LoadScene(0);
-            }
-        }
     }
 
 
@@ -291,23 +283,110 @@ public class XRRigController : MonoBehaviour
     {
         if (isMultiplayer && networkObject != null && networkObject.IsValid && playerNetworkSetup != null)
         {
-            bool isVR = playerNetworkSetup.Platform == platform.VR;
-            Debug.Log("GetPlatformProperty (multiplayer): " + (networkObject.HasInputAuthority ? "local" : "remote") + " -> " + playerNetworkSetup.Platform + " isVR=" + isVR);
+            bool isVR = playerNetworkSetup.NetworkedIsVrStyle();
             return isVR;
         }
         // Single-player or missing refs: use local ProjectManager
-        bool singlePlayerVR = ProjectManager.instance != null && ProjectManager.instance.platforms.platformChoice == platform.VR;
-        Debug.Log("GetPlatformProperty (single): " + singlePlayerVR);
+        bool singlePlayerVR = ProjectManager.instance != null &&
+                              ProjectManager.instance.platforms != null &&
+                              ProjectManager.instance.platforms.IsVrStylePlatform();
         return singlePlayerVR;
     }
 
     /// <summary>True if this instance is the local player (has input authority).</summary>
-    private bool IsLocalPlayer()
+    public bool IsLocalPlayer()
     {
         return networkObject != null && networkObject.IsValid && networkObject.HasInputAuthority;
     }
 
     public bool inputassigned;
+
+    private static void SavePersonModePreference(bool thirdPerson)
+    {
+        PlayerPrefs.SetInt(PersonModePrefsKey, thirdPerson ? 1 : 0);
+        PlayerPrefs.Save();
+    }
+
+    private bool TryGetSavedPersonMode(out bool savedThirdPerson)
+    {
+        if (PlayerPrefs.HasKey(PersonModePrefsKey))
+        {
+            savedThirdPerson = PlayerPrefs.GetInt(PersonModePrefsKey, 0) == 1;
+            return true;
+        }
+
+        savedThirdPerson = false;
+        return false;
+    }
+
+    /// <summary>Pinch / mobile scroll: forwards to the same zoom logic as the mouse wheel.</summary>
+    public void ApplyMobileScrollZoom(float scrollDelta)
+    {
+        if (isMultiplayer && !IsLocalPlayer())
+            return;
+        if (isUiInputLocked)
+            return;
+        HandleZoom(scrollDelta);
+    }
+
+    /// <summary>Sprint from Starter Assets-style UI (hold).</summary>
+    public void SetMobileSprintHeld(bool sprinting)
+    {
+        if (isMultiplayer && !IsLocalPlayer())
+            return;
+        if (isUiInputLocked)
+        {
+            isSprinting = false;
+            return;
+        }
+        isSprinting = sprinting;
+    }
+
+    /// <summary>Jump from UI: fire on pointer down (same as Input System jump.performed).</summary>
+    public void SetMobileJumpFromUi(bool pressed)
+    {
+        if (isMultiplayer && !IsLocalPlayer())
+            return;
+        if (isUiInputLocked)
+            return;
+        if (pressed)
+            isJumping = true;
+    }
+
+    /// <summary>
+    /// Virtual look from Starter Assets UI (joystick touch zones). <paramref name="deltaPixels"/> should match mouse-pixel style deltas (scaled in <see cref="StarterAssets.UICanvasControllerInput"/>).
+    /// Third person: orbit camera; first person: rotates the rig camera without requiring mouse-look coroutine.
+    /// </summary>
+    public void ApplyVirtualUiLook(Vector2 deltaPixels)
+    {
+        if (isMultiplayer && !IsLocalPlayer())
+            return;
+        if (isUiInputLocked)
+            return;
+        if (isThirdPerson && orbitCamera != null)
+        {
+            orbitCamera.ApplyTouchLookDelta(deltaPixels);
+            return;
+        }
+        ApplyFirstPersonVirtualLook(deltaPixels);
+    }
+
+    private void ApplyFirstPersonVirtualLook(Vector2 deltaPixels)
+    {
+        if (cameraTransform == null)
+            return;
+        Vector2 r = deltaPixels * thirdPersonRotationSpeed;
+        cameraTransform.Rotate(Vector3.up * (inverted ? 1f : -1f), r.x, Space.World);
+
+        float currentXRotation = cameraTransform.eulerAngles.x;
+        if (currentXRotation > 180f)
+            currentXRotation -= 360f;
+
+        float rotationAmount = r.y * (inverted ? -1f : 1f);
+        float newXRotation = Mathf.Clamp(currentXRotation + rotationAmount, -50f, 60f);
+        float deltaXRotation = newXRotation - currentXRotation;
+        cameraTransform.Rotate(cameraTransform.right, deltaXRotation, Space.World);
+    }
 
     public void AssignInputActions()
     {
@@ -328,7 +407,7 @@ public class XRRigController : MonoBehaviour
         Debug.Log("[XRRigController] Input actions enabled successfully (move, sprint, jump, pressed, axis, scroll)");
         pressed.performed += _ =>
         {
-            if (!IsPointerOverUI())
+            if (!DesktopPointerUIHelper.IsPointerOverUIThisFrame())
             {
                 if (this.isActiveAndEnabled)
                 {
@@ -350,16 +429,35 @@ public class XRRigController : MonoBehaviour
         jump.canceled += _ => { isJumping = false; };
         move.performed += context =>
         {
+            if (DesktopMobileControlSettings.UseFlatMobileControls)
+                return;
             moveInput = context.ReadValue<Vector2>();
             if (!_loggedFirstInput) { Debug.Log("[XRRigController] First move input received - input callbacks are working."); _loggedFirstInput = true; }
         };
-        axis.performed += context => { rotation = context.ReadValue<Vector2>(); };
+        move.canceled += _ =>
+        {
+            if (DesktopMobileControlSettings.UseFlatMobileControls)
+                return;
+            moveInput = Vector2.zero;
+        };
+        axis.performed += context =>
+        {
+            rotation = DesktopMobileControlSettings.SuppressLookWhileMultiTouch
+                ? Vector2.zero
+                : context.ReadValue<Vector2>();
+        };
         scroll.performed += context => { HandleZoom(context.ReadValue<float>()); };
 
         // Initialize zoom distance
         currentZoomDistance = isThirdPerson ? maxZoomDistance : minZoomDistance;
         Debug.Log($"[XRRigController] AssignInputActions: startMode={startMode}, currentZoomDistance={currentZoomDistance}, thirdPersonThreshold={thirdPersonThreshold}");
-        if (startMode == PersonMode.Third)
+        bool shouldStartThirdPerson = startMode == PersonMode.Third;
+        if (TryGetSavedPersonMode(out bool savedThirdPerson))
+        {
+            shouldStartThirdPerson = savedThirdPerson;
+        }
+
+        if (shouldStartThirdPerson)
         {
             Debug.Log("[XRRigController] AssignInputActions: calling SwitchToThirdPerson (startMode=Third)");
             SwitchToThirdPerson();
@@ -373,10 +471,20 @@ public class XRRigController : MonoBehaviour
     }
     private void HandleMovement()
     {
+        if (isUiInputLocked)
+        {
+            moveInput = Vector2.zero;
+            isSprinting = false;
+            isJumping = false;
+            return;
+        }
+
+        Vector2 moveForFrame = moveInput;
+
         // While sitting, don't apply movement (position is fixed). Pressing move keys leaves the seat.
         if (playerNetworkSetup != null && playerNetworkSetup.IsSitting)
         {
-            if (moveInput.sqrMagnitude > 0.01f)
+            if (moveForFrame.sqrMagnitude > 0.01f)
                 playerNetworkSetup.LeaveCurrentSeatIfAny();
             return;
         }
@@ -401,7 +509,7 @@ public class XRRigController : MonoBehaviour
                 cameraForward = orbitCamera.transform.forward;
                 cameraRight = orbitCamera.transform.right;
 
-                if (moveInput != Vector2.zero)
+                if (moveForFrame != Vector2.zero)
                 {
                     cameraTransform.rotation = orbitCamera.transform.rotation;
 
@@ -409,7 +517,7 @@ public class XRRigController : MonoBehaviour
                     if (rotateCameraWithMovementInThirdPerson)
                     {
                         // Calculate the target direction based on movement input
-                        Vector3 targetDirection = (cameraForward * moveInput.y + cameraRight * moveInput.x).normalized;
+                        Vector3 targetDirection = (cameraForward * moveForFrame.y + cameraRight * moveForFrame.x).normalized;
                         if (targetDirection != Vector3.zero)
                         {
                             // Smoothly rotate the cameraTransform to face the movement direction
@@ -435,13 +543,13 @@ public class XRRigController : MonoBehaviour
             cameraRight = cameraRight.normalized;
 
             // Calculate movement direction based on input relative to camera
-            moveDirection = (cameraForward * moveInput.y + cameraRight * moveInput.x).normalized;
+            moveDirection = (cameraForward * moveForFrame.y + cameraRight * moveForFrame.x).normalized;
             moveDirection *= moveSpeed;
         }
         else
         {
             // Fallback to local transform if cameraTransform is missing
-            moveDirection = new Vector3(moveInput.x, 0f, moveInput.y);
+            moveDirection = new Vector3(moveForFrame.x, 0f, moveForFrame.y);
             moveDirection = transform.TransformDirection(moveDirection);
             moveDirection *= moveSpeed;
         }
@@ -488,6 +596,10 @@ public class XRRigController : MonoBehaviour
 
     private void HandleZoom(float scrollInput)
     {
+        if (isUiInputLocked)
+        {
+            return;
+        }
         if (isMultiplayer)
         {
             if (!IsLocalPlayer())
@@ -515,6 +627,7 @@ public class XRRigController : MonoBehaviour
         if (wasThirdPerson != isThirdPerson)
         {
             Debug.Log($"[XRRigController] HandleZoom: MODE SWITCH {wasThirdPerson} -> {isThirdPerson} (zoom {prevZoom:F2} -> {currentZoomDistance:F2}, threshold={thirdPersonThreshold}), calling {(isThirdPerson ? "onThirdPersonModeStart" : "onFPSModeStart")}");
+            SavePersonModePreference(isThirdPerson);
             if (isThirdPerson)
             {
                 onThirdPersonModeStart();
@@ -530,20 +643,26 @@ public class XRRigController : MonoBehaviour
         }
     }
 
-    private bool IsPointerOverUI()
-    {
-        // Check if the pointer is over a UI element
-        return EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
-    }
-
     private IEnumerator Rotate()
     {
         rotateAllowed = true;
         while (rotateAllowed)
         {
+            if (isUiInputLocked)
+            {
+                rotation = Vector2.zero;
+                previousRotation = Vector2.zero;
+                yield return null;
+                continue;
+            }
             // Only rotate if the pointer is not over a UI element
             if (!isThirdPerson)
             {
+                if (DesktopMobileControlSettings.SuppressLookWhileMultiTouch)
+                {
+                    rotation = Vector2.zero;
+                    previousRotation = Vector2.zero;
+                }
                 if (previousRotation != rotation)
                 {
                     rotation *= thirdPersonRotationSpeed;
@@ -655,7 +774,17 @@ public class XRRigController : MonoBehaviour
             onThirdPersonModeStartEvent.Invoke();
         }
     }
-
+    public void TogglePersonMode()
+    {
+        if (isThirdPerson)
+        {
+            SwitchToFirstPerson();
+        }
+        else
+        {
+            SwitchToThirdPerson();
+        }
+    }
     // New function to switch to first-person mode
     [ContextMenu("SwitchToFirstPerson")]
     public void SwitchToFirstPerson()
@@ -678,6 +807,7 @@ public class XRRigController : MonoBehaviour
 
         isThirdPerson = false;
         currentZoomDistance = minZoomDistance;
+        SavePersonModePreference(false);
         Debug.Log("[XRRigController] SwitchToFirstPerson: calling onFPSModeStart");
         onFPSModeStart();
     }
@@ -717,8 +847,24 @@ public class XRRigController : MonoBehaviour
 
         isThirdPerson = true;
         currentZoomDistance = maxZoomDistance;
+        SavePersonModePreference(true);
         Debug.Log("[XRRigController] SwitchToThirdPerson: calling onThirdPersonModeStart");
         onThirdPersonModeStart();
+    }
+
+    /// <summary>Blocks movement and camera look while gameplay UI overlays are open.</summary>
+    public void SetUiInputLocked(bool locked)
+    {
+        isUiInputLocked = locked;
+        if (locked)
+        {
+            moveInput = Vector2.zero;
+            rotation = Vector2.zero;
+            previousRotation = Vector2.zero;
+            isSprinting = false;
+            isJumping = false;
+            rotateAllowed = false;
+        }
     }
 }
 

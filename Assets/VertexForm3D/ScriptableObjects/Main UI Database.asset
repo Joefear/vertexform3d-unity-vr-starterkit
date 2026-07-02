@@ -25,8 +25,9 @@ MonoBehaviour:
 
 '
   leftSectionItems: []
+  showMainPanel: 1
   mainSectionPanels:
-  - backgroundImage: {fileID: 21300000, guid: 21675390ef73430409bb9a5c9565f075, type: 3}
+  - backgroundImage: {fileID: 21300000, guid: 840e3ebdf3aed804da0c4d2a5814a957, type: 3}
     logoImage: {fileID: 21300000, guid: 9c314c1475525d1489f662e4e50f84e8, type: 3}
   - backgroundImage: {fileID: 0}
     logoImage: {fileID: 0}
@@ -46,6 +47,11 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: aacbc7c8f94f6a74092d14246ad4a8e5, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
     - worldName: Ocean Villa
       worldKey: Ocean Villa
       worldImagePath: 
@@ -55,6 +61,11 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: be96b4c00f375bf478889b601850b20c, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
     - worldName: Games
       worldKey: Games
       worldImagePath: 
@@ -66,24 +77,11 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: ba956be2dc747c84cb5aa20a77ea3a87, type: 3}
       flyMode: 0
-  - categoryName: Geospatial
-    showInPlacesNav: 1
-    environments:
-    - worldName: Earth Terrain
-      worldKey: Earth Terrain
-      worldImagePath: 
-      worldDescription: This environment is built using real-world Earth terrain
-        data.
-      sceneProvider: 0
-      worldImage: {fileID: 21300000, guid: 0068bbc61dbc44e46a5e683b43156547, type: 3}
-      flyMode: 1
-    - worldName: Moon Terrain
-      worldKey: Moon Terrain
-      worldImagePath: 
-      worldDescription: This environment is built using real-world Moon terrain data.
-      sceneProvider: 0
-      worldImage: {fileID: 21300000, guid: d00d7b756bb37cd498b519c772cfd351, type: 3}
-      flyMode: 1
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
   - categoryName: Other
     showInPlacesNav: 1
     environments:
@@ -98,6 +96,11 @@ MonoBehaviour:
       sceneProvider: 1
       worldImage: {fileID: 21300000, guid: 9c9cb025d886ca24e9b0af1416589e5a, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
     - worldName: Bright Space
       worldKey: Bright Space
       worldImagePath: 
@@ -110,6 +113,11 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: c6ad4fd66735ec7419f4f0a41284a0c0, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
     - worldName: Materials Examples
       worldKey: Materials Examples
       worldImagePath: 
@@ -123,6 +131,11 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: 1f7c26e3fa3c9234aac14ed5ca91b9da, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
     - worldName: Mixed Reality
       worldKey: Mixed Reality
       worldImagePath: 
@@ -136,8 +149,14 @@ MonoBehaviour:
       sceneProvider: 0
       worldImage: {fileID: 21300000, guid: 70b38ab1fd2e8e844b5d4da8356e172f, type: 3}
       flyMode: 0
+      Desktop: 1
+      VR: 1
+      WebGPU: 1
+      WebXR: 1
+      Mobile: 1
   rightSectionEnabled: 1
   mirror: 1
+  showAvatarBodyInFirstPerson: 1
   avatarDatas:
   - head: {fileID: 7979297635213059217, guid: ecff4e45bb4f8524980f969a4fbd9ff2, type: 3}
     body: {fileID: -3372522033569347474, guid: ecff4e45bb4f8524980f969a4fbd9ff2, type: 3}
